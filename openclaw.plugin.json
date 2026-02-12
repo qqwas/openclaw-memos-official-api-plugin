@@ -11,7 +11,7 @@
       "baseUrl": {
         "type": "string",
         "description": "MemOS server base URL",
-        "default": "http://192.168.100.230:8000"
+        "default": "http://192.168.1.1:8000"
       },
       "apiKey": {
         "type": "string",
