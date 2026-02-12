@@ -89,14 +89,24 @@
         "type": "string",
         "description": "Session ID for memory operations"
       },
-      "customTags": {
-        "type": "array",
-        "items": {
-          "type": "string"
-        },
-        "description": "Custom tags for memories"
-      }
+    "customTags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Custom tags for memories"
     },
-    "additionalProperties": false
-  }
+    "showRetrievedMemories": {
+      "type": "boolean",
+      "description": "Whether to display retrieved memories in chat window",
+      "default": false
+    },
+    "requireExplicitMemoryReference": {
+      "type": "boolean",
+      "description": "Require explicit memory reference keywords for feedback detection",
+      "default": true
+    }
+  },
+  "additionalProperties": false
+}
 }

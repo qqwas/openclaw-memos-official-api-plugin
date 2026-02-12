@@ -23,6 +23,23 @@ let lastAnalysisTime = 0;
 const conversationCounters = new Map();
 const MEMOS_SOURCE = "openclaw-official-api";
 const MEM_FEEDBACK_THROTTLE_MS = 30000;
+const MEMORY_BLOCK_START = "[[user.memory]]";
+const MEMORY_BLOCK_END = "[[/user.memory]]";
+const OPENCLAW_COMMAND_PATTERNS = [
+  /^\/new\b/i,
+  /^\/reset\b/i,
+  /^\/load\b/i,
+  /^\/save\b/i,
+  /^\/undo\b/i,
+  /^\/redo\b/i,
+  /^\/fork\b/i,
+  /^\/merge\b/i,
+  /^\/diff\b/i,
+  /^\/plan\b/i,
+  /^\/commit\b/i,
+  /^\/agent\b/i,
+  /^A new session was started via \/new or \/reset\./i
+];
 
 // Helper functions
 function warnMissingApiKey(log, context) {
@@ -56,14 +73,30 @@ function bumpConversationCounter(sessionKey) {
   conversationCounters.set(sessionKey, current + 1);
 }
 
-// Extract and prepare message content according to official API format
+function containsEchoedMemory(content) {
+  if (!content || typeof content !== "string") return false;
+  return content.includes(MEMORY_BLOCK_START) && content.includes(MEMORY_BLOCK_END);
+}
+
+function isOpenClawCommandMessage(content) {
+  if (!content || typeof content !== "string") return false;
+  return OPENCLAW_COMMAND_PATTERNS.some(pattern => pattern.test(content.trim()));
+}
+
 function prepareMessageForAPI(msg, cfg) {
   if (!msg || !msg.role) return null;
   
   const rawContent = extractText(msg.content);
   if (!rawContent) return null;
   
-  // According to official API, messages should be in [{role: "...", content: "..."}] format
+  if (containsEchoedMemory(rawContent)) {
+    return null;
+  }
+  
+  if (isOpenClawCommandMessage(rawContent)) {
+    return null;
+  }
+  
   return {
     role: msg.role,
     content: cfg.preserveFullContent !== false ? rawContent : 
@@ -198,7 +231,6 @@ export default {
     log.info?.("[memos-official] Plugin registered with official API compliance");
     log.info?.(`[memos-official] Base URL: ${cfg.baseUrl}, User: ${cfg.userId}`);
 
-    // 1. RECALL: Before agent starts - retrieve relevant memories
     api.on("before_agent_start", async (event, ctx) => {
       if (!cfg.recallEnabled) {
         log.debug?.("[memos-official] Memory recall disabled");
@@ -207,6 +239,11 @@ export default {
       
       if (!event?.prompt || event.prompt.length < 3) {
         log.debug?.("[memos-official] Prompt too short for recall");
+        return;
+      }
+
+      if (isOpenClawCommandMessage(event.prompt)) {
+        log.debug?.("[memos-official] Skipping recall - prompt is an OpenClaw command");
         return;
       }
       
@@ -234,18 +271,20 @@ export default {
           return;
         }
 
+      log.debug?.(`[memos-official] Found ${ctx.retrievedMemories.length} relevant memories`);
+
+      if (cfg.showRetrievedMemories) {
         const promptBlock = formatPromptBlock(ctx.retrievedMemories, {
           wrapTagBlocks: true,
           includeHeaders: true,
         });
 
-        if (!promptBlock) return;
-
-        log.debug?.(`[memos-official] Found ${ctx.retrievedMemories.length} relevant memories`);
-        
-        return {
-          prependContext: promptBlock,
-        };
+        if (promptBlock) {
+          return {
+            prependContext: promptBlock,
+          };
+        }
+      }
       } catch (err) {
         log.warn?.(`[memos-official] Recall failed: ${String(err)}`);
       }
@@ -331,14 +370,24 @@ export default {
           return;
         }
 
-        // Detect user correction intent from last user message
         const lastUserMsg = messages.reverse().find(m => m.role === "user");
         if (!lastUserMsg) {
           log.debug?.("[memos-official] No user message to analyze for feedback");
           return;
         }
 
-        const correctionInfo = detectCorrectionIntent(lastUserMsg.content);
+        const lastUserContent = extractText(lastUserMsg.content);
+        if (containsEchoedMemory(lastUserContent)) {
+          log.debug?.("[memos-official] Skipping feedback - message contains echoed memory content");
+          return;
+        }
+
+        if (isOpenClawCommandMessage(lastUserContent)) {
+          log.debug?.("[memos-official] Skipping feedback - message is an OpenClaw command");
+          return;
+        }
+
+        const correctionInfo = detectCorrectionIntent(lastUserContent, cfg.requireExplicitMemoryReference);
         if (!correctionInfo) {
           log.debug?.("[memos-official] No correction intent detected, skipping feedback");
           return;
