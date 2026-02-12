@@ -83,24 +83,49 @@ function isOpenClawCommandMessage(content) {
   return OPENCLAW_COMMAND_PATTERNS.some(pattern => pattern.test(content.trim()));
 }
 
+const VALID_MEMOS_ROLES = ["system", "user", "assistant", "tool"];
+const ROLE_MAPPING = {
+  "toolResult": "tool"
+};
+
+function sanitizeContent(content) {
+  if (!content || typeof content !== "string") return content;
+  
+  return content
+    .replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "")
+    .replace(/[\u200B-\u200F\uFEFF]/g, "")
+    .replace(/[\uFFFE\uFFFF]/g, "");
+}
+
 function prepareMessageForAPI(msg, cfg) {
   if (!msg || !msg.role) return null;
-  
+
   const rawContent = extractText(msg.content);
   if (!rawContent) return null;
-  
+
   if (containsEchoedMemory(rawContent)) {
     return null;
   }
-  
+
   if (isOpenClawCommandMessage(rawContent)) {
     return null;
   }
-  
+
+  let role = msg.role;
+  if (ROLE_MAPPING[role]) {
+    role = ROLE_MAPPING[role];
+  }
+
+  if (!VALID_MEMOS_ROLES.includes(role)) {
+    return null;
+  }
+
+  const sanitizedContent = sanitizeContent(rawContent);
+
   return {
-    role: msg.role,
-    content: cfg.preserveFullContent !== false ? rawContent : 
-      rawContent.length > 10000 ? `${rawContent.slice(0, 10000)}...` : rawContent
+    role: role,
+    content: cfg.preserveFullContent !== false ? sanitizedContent :
+      sanitizedContent.length > 10000 ? `${sanitizedContent.slice(0, 10000)}...` : sanitizedContent
   };
 }
 
@@ -165,24 +190,29 @@ function buildSearchPayload(cfg, query, ctx) {
 
 // Build add payload according to official /product/add API
 function buildAddPayload(cfg, messages, ctx) {
-  // According to official API, messages should be an array of message objects
-  // API supports: system / user / assistant messages with 'content' and 'chat_time'
+  const messagesArray = messages.map((msg, index) => {
+    const baseMsg = {
+      role: msg.role,
+      content: sanitizeContent(msg.content),
+      chat_time: new Date().toISOString(),
+      message_id: msg.id || crypto.randomUUID()
+    };
 
-  // Convert messages to official API format (array)
-  const messagesArray = messages.map(msg => ({
-    role: msg.role,
-    content: msg.content,
-    // Add optional fields per API spec
-    name: msg.role === "system" ? "system" : undefined,
-    chat_time: new Date().toISOString(),
-    message_id: msg.id || crypto.randomUUID()
-  })).filter(msg => msg.content && msg.content.length > 0);
+    if (msg.role === "system") {
+      baseMsg.name = "system";
+    }
 
-  // Official API format for /product/add
+    if (msg.role === "tool") {
+      baseMsg.tool_call_id = msg.toolCallId || `call_${index}`;
+    }
+
+    return baseMsg;
+  }).filter(msg => msg.content && msg.content.length > 0);
+
   const payload = {
     user_id: cfg.userId,
-    messages: messagesArray, // Array format as per official API
-    async_mode: cfg.asyncMode || "async", // Use async by default per API spec
+    messages: JSON.stringify(messagesArray),
+    async_mode: cfg.asyncMode || "async",
     info: {
       source: "openclaw-official-api",
       sessionKey: ctx?.sessionKey,
