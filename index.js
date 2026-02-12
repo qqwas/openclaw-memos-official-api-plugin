@@ -21,6 +21,7 @@ import {
 let lastCaptureTime = 0;
 let lastAnalysisTime = 0;
 const conversationCounters = new Map();
+const sentMessageIds = new Map();
 const MEMOS_SOURCE = "openclaw-official-api";
 const MEM_FEEDBACK_THROTTLE_MS = 30000;
 const MEMORY_BLOCK_START = "[[user.memory]]";
@@ -130,22 +131,28 @@ function prepareMessageForAPI(msg, cfg) {
 }
 
 // Capture messages based on strategy
-function captureMessages(messages, cfg) {
+function captureMessages(messages, cfg, sessionKey) {
   const results = [];
+  const sessionSentIds = sessionKey ? (sentMessageIds.get(sessionKey) || new Set()) : new Set();
   
   console.log(`[memos-official] Capturing ${messages.length} messages with strategy: ${cfg.captureStrategy}`);
+  console.log(`[memos-official] Already sent ${sessionSentIds.size} messages in this session`);
   
   if (cfg.captureStrategy === "full_session") {
-    // Capture all messages in session
     for (const msg of messages) {
+      const messageId = msg.id || `${msg.role}_${msg.content?.slice(0, 50)}`;
+      
+      if (sessionSentIds.has(messageId)) {
+        continue;
+      }
+      
       const prepared = prepareMessageForAPI(msg, cfg);
       if (prepared) {
-        results.push(prepared);
+        results.push({ ...prepared, _originalId: messageId });
         console.log(`[memos-official] Captured ${msg.role} message: ${prepared.content.length} chars`);
       }
     }
   } else {
-    // last_turn: capture last user-assistant exchange
     const lastUserIndex = messages
       .map((m, idx) => ({ m, idx }))
       .filter(({ m }) => m?.role === "user")
@@ -155,15 +162,38 @@ function captureMessages(messages, cfg) {
     if (lastUserIndex !== undefined) {
       const slice = messages.slice(lastUserIndex);
       for (const msg of slice) {
+        const messageId = msg.id || `${msg.role}_${msg.content?.slice(0, 50)}`;
+        
+        if (sessionSentIds.has(messageId)) {
+          continue;
+        }
+        
         if (!cfg.includeAssistant && msg.role === "assistant") continue;
         const prepared = prepareMessageForAPI(msg, cfg);
-        if (prepared) results.push(prepared);
+        if (prepared) {
+          results.push({ ...prepared, _originalId: messageId });
+        }
       }
     }
   }
   
-  console.log(`[memos-official] Total captured messages: ${results.length}`);
+  console.log(`[memos-official] Total captured messages: ${results.length} (new only)`);
   return results;
+}
+
+function markMessagesAsSent(sessionKey, messages) {
+  if (!sessionKey || !messages || messages.length === 0) return;
+  
+  const sessionSentIds = sentMessageIds.get(sessionKey) || new Set();
+  
+  for (const msg of messages) {
+    if (msg._originalId) {
+      sessionSentIds.add(msg._originalId);
+    }
+  }
+  
+  sentMessageIds.set(sessionKey, sessionSentIds);
+  console.log(`[memos-official] Marked ${messages.length} messages as sent for session ${sessionKey}`);
 }
 
 // Build search payload according to official /product/search API
@@ -339,27 +369,31 @@ export default {
       lastCaptureTime = now;
 
       try {
-        const messages = captureMessages(event.messages, cfg);
-        
+        const sessionKey = ctx?.sessionKey;
+        const messages = captureMessages(event.messages, cfg, sessionKey);
+
         if (!messages.length) {
           log.debug?.("[memos-official] No messages to capture");
           return;
         }
 
         log.debug?.(`[memos-official] Adding ${messages.length} messages to memory`);
-        
+
         const payload = buildAddPayload(cfg, messages, ctx);
         const result = await addMemory(cfg, payload);
-        
+
         if (result?.code === 200) {
           log.debug?.("[memos-official] Successfully added to memory");
-          
-          // Verify content preservation
+
+          if (sessionKey) {
+            markMessagesAsSent(sessionKey, messages);
+          }
+
           if (result.data && result.data.length > 0) {
             const memory = result.data[0];
             const sentChars = messages.reduce((sum, msg) => sum + (msg.content?.length || 0), 0);
             const receivedChars = memory.memory?.length || 0;
-            
+
             if (receivedChars < sentChars * 0.8) {
               log.warn?.(`[memos-official] Possible content loss: sent ${sentChars} chars, received ${receivedChars} chars`);
             } else {
@@ -394,7 +428,7 @@ export default {
       lastAnalysisTime = now;
 
       try {
-        const messages = captureMessages(event.messages, cfg);
+        const messages = captureMessages(event.messages, cfg, ctx?.sessionKey);
         if (!messages.length) {
           log.debug?.("[memos-official] No messages for memfeedback");
           return;
