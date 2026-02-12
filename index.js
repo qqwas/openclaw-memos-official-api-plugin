@@ -99,29 +99,46 @@ function sanitizeContent(content) {
 }
 
 function prepareMessageForAPI(msg, cfg) {
-  if (!msg || !msg.role) return null;
+  console.log(`[memos-official] [DEBUG] prepareMessageForAPI: msg.role=${msg?.role}, hasContent=${!!msg?.content}`);
+
+  if (!msg || !msg.role) {
+    console.log(`[memos-official] [DEBUG]   -> REJECTED: no role`);
+    return null;
+  }
 
   const rawContent = extractText(msg.content);
-  if (!rawContent) return null;
+  console.log(`[memos-official] [DEBUG]   extracted content length: ${rawContent?.length || 0}`);
+
+  if (!rawContent) {
+    console.log(`[memos-official] [DEBUG]   -> REJECTED: empty content`);
+    return null;
+  }
 
   if (containsEchoedMemory(rawContent)) {
+    console.log(`[memos-official] [DEBUG]   -> REJECTED: contains echoed memory`);
     return null;
   }
 
   if (isOpenClawCommandMessage(rawContent)) {
+    console.log(`[memos-official] [DEBUG]   -> REJECTED: is OpenClaw command`);
     return null;
   }
 
   let role = msg.role;
+  const originalRole = role;
   if (ROLE_MAPPING[role]) {
     role = ROLE_MAPPING[role];
+    console.log(`[memos-official] [DEBUG]   mapped role: ${originalRole} -> ${role}`);
   }
 
   if (!VALID_MEMOS_ROLES.includes(role)) {
+    console.log(`[memos-official] [DEBUG]   -> REJECTED: invalid role '${role}' (original: '${originalRole}')`);
     return null;
   }
 
   const sanitizedContent = sanitizeContent(rawContent);
+
+  console.log(`[memos-official] [DEBUG]   -> ACCEPTED: role=${role}, contentLength=${sanitizedContent.length}`);
 
   return {
     role: role,
@@ -130,26 +147,31 @@ function prepareMessageForAPI(msg, cfg) {
   };
 }
 
-// Capture messages based on strategy
 function captureMessages(messages, cfg, sessionKey) {
   const results = [];
   const sessionSentIds = sessionKey ? (sentMessageIds.get(sessionKey) || new Set()) : new Set();
-  
-  console.log(`[memos-official] Capturing ${messages.length} messages with strategy: ${cfg.captureStrategy}`);
-  console.log(`[memos-official] Already sent ${sessionSentIds.size} messages in this session`);
-  
+
+  console.log(`[memos-official] [DEBUG] captureMessages called with ${messages.length} messages`);
+  console.log(`[memos-official] [DEBUG] sessionKey: ${sessionKey}, strategy: ${cfg.captureStrategy}`);
+  console.log(`[memos-official] [DEBUG] Already sent ${sessionSentIds.size} messages in this session`);
+
   if (cfg.captureStrategy === "full_session") {
     for (const msg of messages) {
       const messageId = msg.id || `${msg.role}_${msg.content?.slice(0, 50)}`;
-      
+
+      console.log(`[memos-official] [DEBUG] Processing message: role=${msg.role}, id=${msg.id}, computedId=${messageId.substring(0, 50)}...`);
+
       if (sessionSentIds.has(messageId)) {
+        console.log(`[memos-official] [DEBUG]   -> SKIPPED (already sent)`);
         continue;
       }
-      
+
       const prepared = prepareMessageForAPI(msg, cfg);
       if (prepared) {
         results.push({ ...prepared, _originalId: messageId });
-        console.log(`[memos-official] Captured ${msg.role} message: ${prepared.content.length} chars`);
+        console.log(`[memos-official] [DEBUG]   -> CAPTURED (${prepared.content.length} chars)`);
+      } else {
+        console.log(`[memos-official] [DEBUG]   -> FILTERED OUT by prepareMessageForAPI`);
       }
     }
   } else {
@@ -159,25 +181,39 @@ function captureMessages(messages, cfg, sessionKey) {
       .map(({ idx }) => idx)
       .pop();
 
+    console.log(`[memos-official] [DEBUG] last_turn strategy: lastUserIndex=${lastUserIndex}`);
+
     if (lastUserIndex !== undefined) {
       const slice = messages.slice(lastUserIndex);
+      console.log(`[memos-official] [DEBUG] Processing slice of ${slice.length} messages from index ${lastUserIndex}`);
+
       for (const msg of slice) {
         const messageId = msg.id || `${msg.role}_${msg.content?.slice(0, 50)}`;
-        
+
+        console.log(`[memos-official] [DEBUG] Processing message: role=${msg.role}, id=${msg.id}`);
+
         if (sessionSentIds.has(messageId)) {
+          console.log(`[memos-official] [DEBUG]   -> SKIPPED (already sent)`);
           continue;
         }
-        
-        if (!cfg.includeAssistant && msg.role === "assistant") continue;
+
+        if (!cfg.includeAssistant && msg.role === "assistant") {
+          console.log(`[memos-official] [DEBUG]   -> SKIPPED (assistant excluded)`);
+          continue;
+        }
+
         const prepared = prepareMessageForAPI(msg, cfg);
         if (prepared) {
           results.push({ ...prepared, _originalId: messageId });
+          console.log(`[memos-official] [DEBUG]   -> CAPTURED (${prepared.content.length} chars)`);
+        } else {
+          console.log(`[memos-official] [DEBUG]   -> FILTERED OUT by prepareMessageForAPI`);
         }
       }
     }
   }
-  
-  console.log(`[memos-official] Total captured messages: ${results.length} (new only)`);
+
+  console.log(`[memos-official] [DEBUG] Total captured: ${results.length} / ${messages.length} messages`);
   return results;
 }
 
@@ -292,6 +328,11 @@ export default {
     log.info?.(`[memos-official] Base URL: ${cfg.baseUrl}, User: ${cfg.userId}`);
 
     api.on("before_agent_start", async (event, ctx) => {
+      log.debug?.(`[memos-official] [DEBUG] before_agent_start triggered`);
+      log.debug?.(`[memos-official] [DEBUG] event.prompt: ${event?.prompt?.substring(0, 100)}...`);
+      log.debug?.(`[memos-official] [DEBUG] ctx.sessionKey: ${ctx?.sessionKey}`);
+      log.debug?.(`[memos-official] [DEBUG] ctx keys: ${Object.keys(ctx || {}).join(", ")}`);
+      
       if (!cfg.recallEnabled) {
         log.debug?.("[memos-official] Memory recall disabled");
         return;
@@ -350,8 +391,22 @@ export default {
       }
     });
 
-    // 2. ADD: After agent ends - add conversation to memory
     api.on("agent_end", async (event, ctx) => {
+      log.debug?.(`[memos-official] [DEBUG] agent_end (add) triggered`);
+      log.debug?.(`[memos-official] [DEBUG] event.success: ${event?.success}`);
+      log.debug?.(`[memos-official] [DEBUG] event.messages count: ${event?.messages?.length || 0}`);
+      log.debug?.(`[memos-official] [DEBUG] ctx.sessionKey: ${ctx?.sessionKey}`);
+      
+      if (event?.messages?.length > 0) {
+        log.debug?.(`[memos-official] [DEBUG] Raw messages from OpenClaw:`);
+        event.messages.forEach((msg, idx) => {
+          const contentPreview = typeof msg.content === 'string' 
+            ? msg.content.substring(0, 80).replace(/\n/g, '\\n')
+            : JSON.stringify(msg.content).substring(0, 80);
+          log.debug?.(`[memos-official] [DEBUG]   [${idx}] role=${msg.role}, id=${msg.id}, content=${contentPreview}...`);
+        });
+      }
+      
       if (!cfg.addEnabled || !event?.success || !event?.messages?.length) {
         return;
       }
