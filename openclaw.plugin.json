@@ -1,0 +1,102 @@
+{
+  "id": "memos-official-api-plugin",
+  "name": "MemOS Official API Plugin",
+  "description": "MemOS plugin that strictly follows official API specifications",
+  "version": "2.0.0",
+  "kind": "lifecycle",
+  "main": "./index.js",
+  "configSchema": {
+    "type": "object",
+    "properties": {
+      "baseUrl": {
+        "type": "string",
+        "description": "MemOS server base URL",
+        "default": "http://192.168.100.230:8000"
+      },
+      "apiKey": {
+        "type": "string",
+        "description": "MemOS API key (Token auth)",
+        "default": ""
+      },
+      "userId": {
+        "type": "string",
+        "description": "MemOS user_id",
+        "default": "openclaw-user"
+      },
+      "recallEnabled": {
+        "type": "boolean",
+        "description": "Enable memory recall before agent starts",
+        "default": true
+      },
+      "addEnabled": {
+        "type": "boolean",
+        "description": "Enable adding conversation to memory after agent ends",
+        "default": true
+      },
+      "memFeedbackEnabled": {
+        "type": "boolean",
+        "description": "Enable MemFeedback for memory correction and improvement",
+        "default": true
+      },
+      "searchMode": {
+        "type": "string",
+        "enum": ["fast", "fine", "mixture"],
+        "description": "Default search mode (fast/fine/mixture)",
+        "default": "fast"
+      },
+      "topK": {
+        "type": "integer",
+        "description": "Default number of results to return",
+        "default": 10
+      },
+      "prefTopK": {
+        "type": "integer",
+        "description": "Number of preference memories to retrieve",
+        "default": 6
+      },
+      "includePreference": {
+        "type": "boolean",
+        "description": "Whether to retrieve preference memories",
+        "default": true
+      },
+      "searchToolMemory": {
+        "type": "boolean",
+        "description": "Whether to retrieve tool memories",
+        "default": true
+      },
+      "toolMemTopK": {
+        "type": "integer",
+        "description": "Number of tool memories to retrieve",
+        "default": 6
+      },
+      "captureStrategy": {
+        "type": "string",
+        "enum": ["full_session", "last_turn"],
+        "description": "What messages to capture on agent_end",
+        "default": "full_session"
+      },
+      "includeAssistant": {
+        "type": "boolean",
+        "description": "Include assistant messages in captured messages",
+        "default": true
+      },
+      "preserveFullContent": {
+        "type": "boolean",
+        "description": "Preserve full content without truncation",
+        "default": true
+      },
+      "sessionId": {
+        "type": "string",
+        "description": "Session ID for memory operations"
+      },
+      "customTags": {
+        "type": "array",
+        "items": {
+          "type": "string"
+        },
+        "description": "Custom tags for memories"
+      }
+    },
+    "additionalProperties": false
+  }
+}

@@ -1,0 +1,369 @@
+#!/usr/bin/env node
+
+// MemOS Official API Plugin - Strictly follows official API specifications
+// Based on: https://memos-docs.openmem.net/cn/api-reference/
+
+import {
+  buildConfig,
+  extractText,
+  formatPromptBlock,
+  searchMemory,
+  addMemory,
+  memFeedback,
+  updateMemory,
+  deleteMemory,
+  transformSearchResults,
+  analyzeForMemFeedback,
+  buildMemFeedbackPayload,
+  USER_QUERY_MARKER
+} from "./lib/memos-api-official.js";
+
+let lastCaptureTime = 0;
+let lastAnalysisTime = 0;
+const conversationCounters = new Map();
+const MEMOS_SOURCE = "openclaw-official-api";
+const MEM_FEEDBACK_THROTTLE_MS = 30000;
+
+// Helper functions
+function warnMissingApiKey(log, context) {
+  const heading = "[memos-official] Missing MEMOS_API_KEY (Token auth)";
+  const header = `${heading}${context ? `; ${context} skipped` : ""}. Configure it with:`;
+  log.warn?.(
+    [
+      header,
+      "echo 'export MEMOS_API_KEY=\"your-token-here\"' >> ~/.zshrc",
+      "source ~/.zshrc",
+      `or add to plugin config\nGet API key from memOS dashboard`,
+    ].join("\n"),
+  );
+}
+
+function stripPrependedPrompt(content) {
+  if (!content) return content;
+  const idx = content.lastIndexOf(USER_QUERY_MARKER);
+  if (idx === -1) return content;
+  return content.slice(idx + USER_QUERY_MARKER.length).trimStart();
+}
+
+function getCounterSuffix(sessionKey) {
+  if (!sessionKey) return "";
+  const current = conversationCounters.get(sessionKey) ?? 0;
+  return current > 0 ? `#${current}` : "";
+}
+
+function bumpConversationCounter(sessionKey) {
+  const current = conversationCounters.get(sessionKey) ?? 0;
+  conversationCounters.set(sessionKey, current + 1);
+}
+
+// Extract and prepare message content according to official API format
+function prepareMessageForAPI(msg, cfg) {
+  if (!msg || !msg.role) return null;
+  
+  const rawContent = extractText(msg.content);
+  if (!rawContent) return null;
+  
+  // According to official API, messages should be in [{role: "...", content: "..."}] format
+  return {
+    role: msg.role,
+    content: cfg.preserveFullContent !== false ? rawContent : 
+      rawContent.length > 10000 ? `${rawContent.slice(0, 10000)}...` : rawContent
+  };
+}
+
+// Capture messages based on strategy
+function captureMessages(messages, cfg) {
+  const results = [];
+  
+  console.log(`[memos-official] Capturing ${messages.length} messages with strategy: ${cfg.captureStrategy}`);
+  
+  if (cfg.captureStrategy === "full_session") {
+    // Capture all messages in session
+    for (const msg of messages) {
+      const prepared = prepareMessageForAPI(msg, cfg);
+      if (prepared) {
+        results.push(prepared);
+        console.log(`[memos-official] Captured ${msg.role} message: ${prepared.content.length} chars`);
+      }
+    }
+  } else {
+    // last_turn: capture last user-assistant exchange
+    const lastUserIndex = messages
+      .map((m, idx) => ({ m, idx }))
+      .filter(({ m }) => m?.role === "user")
+      .map(({ idx }) => idx)
+      .pop();
+
+    if (lastUserIndex !== undefined) {
+      const slice = messages.slice(lastUserIndex);
+      for (const msg of slice) {
+        if (!cfg.includeAssistant && msg.role === "assistant") continue;
+        const prepared = prepareMessageForAPI(msg, cfg);
+        if (prepared) results.push(prepared);
+      }
+    }
+  }
+  
+  console.log(`[memos-official] Total captured messages: ${results.length}`);
+  return results;
+}
+
+// Build search payload according to official /product/search API
+function buildSearchPayload(cfg, query, ctx) {
+  const payload = {
+    user_id: cfg.userId,
+    query: query,
+    mode: cfg.searchMode || "fast",
+    top_k: cfg.topK || 10,
+    pref_top_k: cfg.prefTopK || 6,
+    include_preference: cfg.includePreference !== false,
+    search_tool_memory: cfg.searchToolMemory !== false,
+    tool_mem_top_k: cfg.toolMemTopK || 6
+  };
+
+  // Add session_id if configured
+  if (cfg.sessionId) {
+    payload.session_id = cfg.sessionId;
+  }
+
+  console.log(`[memos-official] Built search payload: ${JSON.stringify(payload)}`);
+  return payload;
+}
+
+// Build add payload according to official /product/add API
+function buildAddPayload(cfg, messages, ctx) {
+  // According to official API example, messages should be a string (concatenated content)
+  // chat_history contains the actual message objects with role, content, etc.
+  
+  // Convert messages to chat_history format
+  const chat_history = messages.map(msg => ({
+    role: msg.role,
+    content: msg.content,
+    // Add optional fields
+    name: msg.role === "system" ? "system" : undefined,
+    chat_time: new Date().toISOString(),
+    message_id: msg.id || crypto.randomUUID()
+  })).filter(msg => msg.content && msg.content.length > 0);
+
+  // Create a concatenated string for messages field (as per official example)
+  const messagesString = messages
+    .map(msg => `[${msg.role}]: ${msg.content}`)
+    .join("\n\n");
+
+  // Official API format for /product/add
+  const payload = {
+    user_id: cfg.userId,
+    messages: messagesString, // String format as per official example
+    chat_history: chat_history, // Object array format
+    async_mode: "sync", // Use sync mode for immediate feedback and debugging
+    mode: "fast", // Only used when async_mode='sync'
+    info: {
+      source: "openclaw-official-api",
+      sessionKey: ctx?.sessionKey,
+      agentId: ctx?.agentId,
+      pluginVersion: "2.0.0-official",
+      timestamp: new Date().toISOString()
+    }
+  };
+
+  // Add session_id if configured (official field name)
+  if (cfg.sessionId) {
+    payload.session_id = cfg.sessionId;
+  } else if (ctx?.sessionKey) {
+    payload.session_id = ctx.sessionKey;
+  }
+
+  // Add custom_tags if configured (official field name)
+  if (cfg.customTags && cfg.customTags.length > 0) {
+    payload.custom_tags = cfg.customTags;
+  }
+
+  // Add additional info from config
+  if (cfg.info && typeof cfg.info === 'object') {
+    payload.info = { ...payload.info, ...cfg.info };
+  }
+
+  // Debug log
+  const totalChars = messages.reduce((sum, msg) => sum + (msg.content?.length || 0), 0);
+  console.log(`[memos-official] Built add payload with ${messages.length} messages, ${totalChars} total chars`);
+  
+  return payload;
+}
+
+// Main plugin
+export default {
+  id: "memos-official-api-plugin",
+  name: "MemOS Official API Plugin",
+  description: "MemOS plugin that strictly follows official API specifications",
+  kind: "lifecycle",
+
+  register(api) {
+    const cfg = buildConfig(api.pluginConfig);
+    const log = api.logger ?? console;
+
+    // Log configuration
+    log.info?.("[memos-official] Plugin registered with official API compliance");
+    log.info?.(`[memos-official] Base URL: ${cfg.baseUrl}, User: ${cfg.userId}`);
+
+    // 1. RECALL: Before agent starts - retrieve relevant memories
+    api.on("before_agent_start", async (event, ctx) => {
+      if (!cfg.recallEnabled) {
+        log.debug?.("[memos-official] Memory recall disabled");
+        return;
+      }
+      
+      if (!event?.prompt || event.prompt.length < 3) {
+        log.debug?.("[memos-official] Prompt too short for recall");
+        return;
+      }
+      
+      if (!cfg.apiKey) {
+        warnMissingApiKey(log, "recall");
+        return;
+      }
+
+      try {
+        log.debug?.("[memos-official] Searching memories for:", event.prompt.substring(0, 50) + "...");
+        
+        const payload = buildSearchPayload(cfg, event.prompt, ctx);
+        const result = await searchMemory(cfg, payload);
+        
+        if (result?.code !== 200) {
+          log.warn?.(`[memos-official] Search failed: ${result?.message || "Unknown error"}`);
+          return;
+        }
+
+        // Store retrieved memories
+        ctx.retrievedMemories = transformSearchResults(result);
+        
+        if (!ctx.retrievedMemories || ctx.retrievedMemories.length === 0) {
+          log.debug?.("[memos-official] No relevant memories found");
+          return;
+        }
+
+        const promptBlock = formatPromptBlock(ctx.retrievedMemories, {
+          wrapTagBlocks: true,
+          includeHeaders: true,
+        });
+
+        if (!promptBlock) return;
+
+        log.debug?.(`[memos-official] Found ${ctx.retrievedMemories.length} relevant memories`);
+        
+        return {
+          prependContext: promptBlock,
+        };
+      } catch (err) {
+        log.warn?.(`[memos-official] Recall failed: ${String(err)}`);
+      }
+    });
+
+    // 2. ADD: After agent ends - add conversation to memory
+    api.on("agent_end", async (event, ctx) => {
+      if (!cfg.addEnabled || !event?.success || !event?.messages?.length) {
+        return;
+      }
+
+      if (!cfg.apiKey) {
+        warnMissingApiKey(log, "add");
+        return;
+      }
+
+      const now = Date.now();
+      if (cfg.throttleMs && now - lastCaptureTime < cfg.throttleMs) {
+        log.debug?.("[memos-official] Throttled memory addition");
+        return;
+      }
+      lastCaptureTime = now;
+
+      try {
+        const messages = captureMessages(event.messages, cfg);
+        
+        if (!messages.length) {
+          log.debug?.("[memos-official] No messages to capture");
+          return;
+        }
+
+        log.debug?.(`[memos-official] Adding ${messages.length} messages to memory`);
+        
+        const payload = buildAddPayload(cfg, messages, ctx);
+        const result = await addMemory(cfg, payload);
+        
+        if (result?.code === 200) {
+          log.debug?.("[memos-official] Successfully added to memory");
+          
+          // Verify content preservation
+          if (result.data && result.data.length > 0) {
+            const memory = result.data[0];
+            const sentChars = messages.reduce((sum, msg) => sum + (msg.content?.length || 0), 0);
+            const receivedChars = memory.memory?.length || 0;
+            
+            if (receivedChars < sentChars * 0.8) {
+              log.warn?.(`[memos-official] Possible content loss: sent ${sentChars} chars, received ${receivedChars} chars`);
+            } else {
+              log.debug?.(`[memos-official] Content preserved: ${receivedChars}/${sentChars} chars`);
+            }
+          }
+        } else {
+          log.warn?.(`[memos-official] Add failed: ${result?.message || "Unknown error"}`);
+        }
+      } catch (err) {
+        log.warn?.(`[memos-official] Add failed: ${String(err)}`);
+      }
+    });
+
+    // 3. MEMFEEDBACK: Analyze for memory feedback
+    api.on("agent_end", async (event, ctx) => {
+      if (!cfg.memFeedbackEnabled || !event?.success || !event?.messages?.length) {
+        return;
+      }
+
+      if (!cfg.apiKey) {
+        warnMissingApiKey(log, "memfeedback");
+        return;
+      }
+
+      const now = Date.now();
+      const sinceLastAnalysis = now - lastAnalysisTime;
+      if (sinceLastAnalysis < MEM_FEEDBACK_THROTTLE_MS) {
+        log.debug?.(`[memos-official] MemFeedback throttled (${sinceLastAnalysis}ms ago)`);
+        return;
+      }
+      lastAnalysisTime = now;
+
+      try {
+        const messages = captureMessages(event.messages, cfg);
+        if (!messages.length) {
+          log.debug?.("[memos-official] No messages for memfeedback");
+          return;
+        }
+
+        const opportunities = analyzeForMemFeedback(
+          messages,
+          ctx.retrievedMemories || [],
+          cfg.memFeedbackThreshold || 0.7,
+          cfg.memFeedbackTypes || ["correction", "refinement"]
+        );
+
+        if (!opportunities.length) {
+          log.debug?.("[memos-official] No memfeedback opportunities");
+          return;
+        }
+
+        log.debug?.(`[memos-official] Found ${opportunities.length} memfeedback opportunities`);
+        const payload = buildMemFeedbackPayload(cfg, opportunities, ctx);
+        const result = await memFeedback(cfg, payload);
+
+        if (result?.code === 200) {
+          log.debug?.("[memos-official] MemFeedback submitted");
+        } else {
+          log.warn?.(`[memos-official] MemFeedback failed: ${result?.message || "Unknown error"}`);
+        }
+      } catch (err) {
+        log.warn?.(`[memos-official] MemFeedback failed: ${String(err)}`);
+      }
+    });
+
+    log.info?.("[memos-official] Plugin fully registered with official API compliance");
+  },
+};
