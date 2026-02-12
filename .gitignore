@@ -22,3 +22,6 @@ credentials.json
 .opencode/
 .vscode/
 AGENTS.md
+api.json
+api.md
+error.md

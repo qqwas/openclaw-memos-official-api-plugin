@@ -47,6 +47,7 @@ openclaw gateway restart
   "captureStrategy": "full_session",
   "includeAssistant": true,
   "preserveFullContent": true,
+  "showRetrievedMemories": false
   "customTags": [
     "openclaw",
     "openclaw-official-api"
