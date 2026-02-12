@@ -80,8 +80,26 @@ function containsEchoedMemory(content) {
 }
 
 function isOpenClawCommandMessage(content) {
-  if (!content || typeof content !== "string") return false;
-  return OPENCLAW_COMMAND_PATTERNS.some(pattern => pattern.test(content.trim()));
+  console.log(`[memos-official] [DEBUG] isOpenClawCommandMessage: typeof=${typeof content}, length=${content?.length}`);
+  console.log(`[memos-official] [DEBUG]   content preview: ${content?.substring(0, 100)}`);
+
+  if (!content || typeof content !== "string") {
+    console.log(`[memos-official] [DEBUG]   -> false (not a string)`);
+    return false;
+  }
+
+  const trimmed = content.trim();
+  console.log(`[memos-official] [DEBUG]   trimmed preview: ${trimmed?.substring(0, 100)}`);
+
+  for (const pattern of OPENCLAW_COMMAND_PATTERNS) {
+    if (pattern.test(trimmed)) {
+      console.log(`[memos-official] [DEBUG]   -> true (matched pattern: ${pattern})`);
+      return true;
+    }
+  }
+
+  console.log(`[memos-official] [DEBUG]   -> false (no pattern matched)`);
+  return false;
 }
 
 const VALID_MEMOS_ROLES = ["system", "user", "assistant", "tool"];
@@ -157,9 +175,17 @@ function captureMessages(messages, cfg, sessionKey) {
 
   if (cfg.captureStrategy === "full_session") {
     for (const msg of messages) {
-      const messageId = msg.id || `${msg.role}_${msg.content?.slice(0, 50)}`;
+      let contentPreview;
+      if (typeof msg.content === "string") {
+        contentPreview = msg.content.substring(0, 50);
+      } else if (Array.isArray(msg.content)) {
+        contentPreview = "[Array:" + msg.content.map(c => c.type || typeof c).join(",") + "]";
+      } else {
+        contentPreview = "[" + typeof msg.content + "]";
+      }
+      const messageId = msg.id || `${msg.role}_${contentPreview}`;
 
-      console.log(`[memos-official] [DEBUG] Processing message: role=${msg.role}, id=${msg.id}, computedId=${messageId.substring(0, 50)}...`);
+      console.log(`[memos-official] [DEBUG] Processing message: role=${msg.role}, id=${msg.id}, contentType=${typeof msg.content}, computedId=${messageId.substring(0, 50)}...`);
 
       if (sessionSentIds.has(messageId)) {
         console.log(`[memos-official] [DEBUG]   -> SKIPPED (already sent)`);
@@ -188,9 +214,17 @@ function captureMessages(messages, cfg, sessionKey) {
       console.log(`[memos-official] [DEBUG] Processing slice of ${slice.length} messages from index ${lastUserIndex}`);
 
       for (const msg of slice) {
-        const messageId = msg.id || `${msg.role}_${msg.content?.slice(0, 50)}`;
+        let contentPreview;
+        if (typeof msg.content === "string") {
+          contentPreview = msg.content.substring(0, 50);
+        } else if (Array.isArray(msg.content)) {
+          contentPreview = "[Array:" + msg.content.map(c => c.type || typeof c).join(",") + "]";
+        } else {
+          contentPreview = "[" + typeof msg.content + "]";
+        }
+        const messageId = msg.id || `${msg.role}_${contentPreview}`;
 
-        console.log(`[memos-official] [DEBUG] Processing message: role=${msg.role}, id=${msg.id}`);
+        console.log(`[memos-official] [DEBUG] Processing message: role=${msg.role}, id=${msg.id}, contentType=${typeof msg.content}`);
 
         if (sessionSentIds.has(messageId)) {
           console.log(`[memos-official] [DEBUG]   -> SKIPPED (already sent)`);
