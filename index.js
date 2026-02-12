@@ -13,8 +13,8 @@ import {
   updateMemory,
   deleteMemory,
   transformSearchResults,
-  analyzeForMemFeedback,
   buildMemFeedbackPayload,
+  detectCorrectionIntent,
   USER_QUERY_MARKER
 } from "./lib/memos-api-official.js";
 
@@ -132,31 +132,24 @@ function buildSearchPayload(cfg, query, ctx) {
 
 // Build add payload according to official /product/add API
 function buildAddPayload(cfg, messages, ctx) {
-  // According to official API example, messages should be a string (concatenated content)
-  // chat_history contains the actual message objects with role, content, etc.
-  
-  // Convert messages to chat_history format
-  const chat_history = messages.map(msg => ({
+  // According to official API, messages should be an array of message objects
+  // API supports: system / user / assistant messages with 'content' and 'chat_time'
+
+  // Convert messages to official API format (array)
+  const messagesArray = messages.map(msg => ({
     role: msg.role,
     content: msg.content,
-    // Add optional fields
+    // Add optional fields per API spec
     name: msg.role === "system" ? "system" : undefined,
     chat_time: new Date().toISOString(),
     message_id: msg.id || crypto.randomUUID()
   })).filter(msg => msg.content && msg.content.length > 0);
 
-  // Create a concatenated string for messages field (as per official example)
-  const messagesString = messages
-    .map(msg => `[${msg.role}]: ${msg.content}`)
-    .join("\n\n");
-
   // Official API format for /product/add
   const payload = {
     user_id: cfg.userId,
-    messages: messagesString, // String format as per official example
-    chat_history: chat_history, // Object array format
-    async_mode: "sync", // Use sync mode for immediate feedback and debugging
-    mode: "fast", // Only used when async_mode='sync'
+    messages: messagesArray, // Array format as per official API
+    async_mode: cfg.asyncMode || "async", // Use async by default per API spec
     info: {
       source: "openclaw-official-api",
       sessionKey: ctx?.sessionKey,
@@ -338,24 +331,44 @@ export default {
           return;
         }
 
-        const opportunities = analyzeForMemFeedback(
-          messages,
-          ctx.retrievedMemories || [],
-          cfg.memFeedbackThreshold || 0.7,
-          cfg.memFeedbackTypes || ["correction", "refinement"]
-        );
-
-        if (!opportunities.length) {
-          log.debug?.("[memos-official] No memfeedback opportunities");
+        // Detect user correction intent from last user message
+        const lastUserMsg = messages.reverse().find(m => m.role === "user");
+        if (!lastUserMsg) {
+          log.debug?.("[memos-official] No user message to analyze for feedback");
           return;
         }
 
-        log.debug?.(`[memos-official] Found ${opportunities.length} memfeedback opportunities`);
-        const payload = buildMemFeedbackPayload(cfg, opportunities, ctx);
+        const correctionInfo = detectCorrectionIntent(lastUserMsg.content);
+        if (!correctionInfo) {
+          log.debug?.("[memos-official] No correction intent detected, skipping feedback");
+          return;
+        }
+
+        log.info?.(`[memos-official] Correction detected: "${correctionInfo.keywords.join(", ")}"`);
+
+        if (!ctx.retrievedMemories || ctx.retrievedMemories.length === 0) {
+          log.debug?.("[memos-official] No retrieved memories for feedback");
+          return;
+        }
+
+        // Find most relevant memory to correct (simplified: use first retrieved)
+        const relatedMemory = ctx.retrievedMemories[0]?.text || null;
+
+        const payload = buildMemFeedbackPayload(
+          cfg,
+          messages,
+          ctx.retrievedMemories,
+          ctx,
+          {
+            ...correctionInfo,
+            correctionMessage: lastUserMsg.content,
+            relatedMemory: relatedMemory
+          }
+        );
         const result = await memFeedback(cfg, payload);
 
         if (result?.code === 200) {
-          log.debug?.("[memos-official] MemFeedback submitted");
+          log.info?.("[memos-official] MemFeedback submitted for correction");
         } else {
           log.warn?.(`[memos-official] MemFeedback failed: ${result?.message || "Unknown error"}`);
         }

@@ -2,7 +2,7 @@
   "id": "memos-official-api-plugin",
   "name": "MemOS Official API Plugin",
   "description": "MemOS plugin that strictly follows official API specifications",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "kind": "lifecycle",
   "main": "./index.js",
   "configSchema": {
@@ -42,7 +42,7 @@
         "type": "string",
         "enum": ["fast", "fine", "mixture"],
         "description": "Default search mode (fast/fine/mixture)",
-        "default": "fast"
+        "default": "mixture"
       },
       "topK": {
         "type": "integer",

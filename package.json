@@ -1,6 +1,6 @@
 {
   "name": "memos-official-api-plugin",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "description": "OpenClaw lifecycle plugin for MemOS local (add + recall memory)",
   "type": "module",
   "author": "qqwas",
