@@ -174,18 +174,11 @@ function captureMessages(messages, cfg, sessionKey) {
   console.log(`[memos-official] [DEBUG] Already sent ${sessionSentIds.size} messages in this session`);
 
   if (cfg.captureStrategy === "full_session") {
-    for (const msg of messages) {
-      let contentPreview;
-      if (typeof msg.content === "string") {
-        contentPreview = msg.content.substring(0, 50);
-      } else if (Array.isArray(msg.content)) {
-        contentPreview = "[Array:" + msg.content.map(c => c.type || typeof c).join(",") + "]";
-      } else {
-        contentPreview = "[" + typeof msg.content + "]";
-      }
-      const messageId = msg.id || `${msg.role}_${contentPreview}`;
+    for (let i = 0; i < messages.length; i++) {
+      const msg = messages[i];
+      const messageId = msg.id || `${msg.role}_${i}`;
 
-      console.log(`[memos-official] [DEBUG] Processing message: role=${msg.role}, id=${msg.id}, contentType=${typeof msg.content}, computedId=${messageId.substring(0, 50)}...`);
+      console.log(`[memos-official] [DEBUG] Processing message [${i}]: role=${msg.role}, id=${msg.id}, contentType=${typeof msg.content}, computedId=${messageId}`);
 
       if (sessionSentIds.has(messageId)) {
         console.log(`[memos-official] [DEBUG]   -> SKIPPED (already sent)`);
@@ -213,18 +206,12 @@ function captureMessages(messages, cfg, sessionKey) {
       const slice = messages.slice(lastUserIndex);
       console.log(`[memos-official] [DEBUG] Processing slice of ${slice.length} messages from index ${lastUserIndex}`);
 
-      for (const msg of slice) {
-        let contentPreview;
-        if (typeof msg.content === "string") {
-          contentPreview = msg.content.substring(0, 50);
-        } else if (Array.isArray(msg.content)) {
-          contentPreview = "[Array:" + msg.content.map(c => c.type || typeof c).join(",") + "]";
-        } else {
-          contentPreview = "[" + typeof msg.content + "]";
-        }
-        const messageId = msg.id || `${msg.role}_${contentPreview}`;
+      for (let i = 0; i < slice.length; i++) {
+        const msg = slice[i];
+        const globalIndex = lastUserIndex + i;
+        const messageId = msg.id || `${msg.role}_${globalIndex}`;
 
-        console.log(`[memos-official] [DEBUG] Processing message: role=${msg.role}, id=${msg.id}, contentType=${typeof msg.content}`);
+        console.log(`[memos-official] [DEBUG] Processing message [${globalIndex}]: role=${msg.role}, id=${msg.id}, contentType=${typeof msg.content}`);
 
         if (sessionSentIds.has(messageId)) {
           console.log(`[memos-official] [DEBUG]   -> SKIPPED (already sent)`);
